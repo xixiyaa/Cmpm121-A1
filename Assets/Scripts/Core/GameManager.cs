@@ -178,6 +178,16 @@ public class GameManager
     }
     [Serializable] private class Wrapper { public EnemyInfo[] arr; }
     /*─────────────────────*/
+    private Dictionary<string, LevelData> levelMap;
+    public Dictionary<string, LevelData> LevelMap => levelMap;
+
+    public void LoadLevelData(TextAsset jsonAsset)
+{
+    LevelDataList wrapper = JsonUtility.FromJson<LevelDataList>("{\"levels\":" + jsonAsset.text + "}");
+    levelMap = new Dictionary<string, LevelData>();
+    foreach (var lvl in wrapper.levels)
+        levelMap[lvl.name] = lvl;
+}
 
     private GameManager()
     {
@@ -196,4 +206,30 @@ public class GameManager
         }
         enemies.Clear();
     }
+}
+[Serializable]
+public class LevelData
+{
+    public string name;
+    public int waves;
+    public List<SpawnInfo> spawns;
+}
+
+[Serializable]
+public class SpawnInfo
+{
+    public string enemy;
+    public string count;
+    public string hp;
+    public string speed;
+    public string damage;
+    public float delay;
+    public int[] sequence;
+    public string location;
+}
+
+[Serializable]
+public class LevelDataList
+{
+    public List<LevelData> levels;
 }

@@ -186,39 +186,33 @@
 // }
 
 
-// New Version: Have a HudInfo that shows the current wave and kills and the level name,
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
 using System.Collections;
+using System.Collections.Generic;
 
 public class EnemySpawner : MonoBehaviour
 {
-    /* ---------- Inspector UI ---------- */
     [Header("UI")]
-    public Image      level_selector;      // menu panel
-    public GameObject buttonPrefab;        // difficulty button prefab
-    public TMP_Text   waveButtonLabel;     // text on reward‑screen button
-    public GameObject rewardScreenPanel;   // panel shown between waves
-    public TMP_Text   HUDInfo;             // drag HUDInfo (TMP) here
+    public Image level_selector;
+    public GameObject buttonPrefab;
+    public TMP_Text waveButtonLabel;
+    public GameObject rewardScreenPanel;
+    public TMP_Text HUDInfo;
 
-    /* ---------- Spawn ---------- */
-    public GameObject  enemyPrefab;
+    [Header("Spawn")]
+    public GameObject enemyPrefab;
     public SpawnPoint[] SpawnPoints;
 
-    /* ---------- state ---------- */
-    int waveIndex       = 0;
-    int maxWaves        = 0;
-    bool levelFinished  = false;
-    int enemiesSpawned  = 0;   // per‑wave spawn count
-    int killCount       = 0;   // per‑wave kill count  ⬅︎ NEW
+    int waveIndex = 0;
+    int maxWaves = 0;
+    bool levelFinished = false;
+    int enemiesSpawned = 0;
+    int killCount = 0;
 
-    /* ====================================================================== */
-    /*                          INITIALISATION                                */
-    /* ====================================================================== */
     void Start()
     {
-        // Auto‑fill SpawnPoints if left empty
 #if UNITY_2022_2_OR_NEWER
         if (SpawnPoints == null || SpawnPoints.Length == 0)
             SpawnPoints = Object.FindObjectsByType<SpawnPoint>(FindObjectsSortMode.None);
@@ -227,7 +221,6 @@ public class EnemySpawner : MonoBehaviour
             SpawnPoints = FindObjectsOfType<SpawnPoint>();
 #endif
 
-        // Build three menu buttons
         string[] lvls = { "Easy", "Medium", "Endless" };
         float y0 = 130f, dy = -50f;
         for (int i = 0; i < lvls.Length; i++)
@@ -239,50 +232,43 @@ public class EnemySpawner : MonoBehaviour
             mc.SetLevel(lvls[i]);
         }
 
-        // Hide HUD until game starts
         if (HUDInfo) HUDInfo.gameObject.SetActive(false);
 
-        // Load enemy data
-        var js = Resources.Load<TextAsset>("enemies");
-        GameManager.Instance.LoadEnemyData(js);
+        var enemyJson = Resources.Load<TextAsset>("enemies");
+        GameManager.Instance.LoadEnemyData(enemyJson);
+
+        var levelJson = Resources.Load<TextAsset>("levels");
+        GameManager.Instance.LoadLevelData(levelJson);
+        Debug.Log("Loaded level: " + GameManager.Instance.LevelMap["Easy"].spawns.Count + " spawn groups.");
+
     }
 
-    /* ====================================================================== */
-    /*                        START A NEW LEVEL                               */
-    /* ====================================================================== */
     public void StartLevel(string levelName)
     {
         level_selector.gameObject.SetActive(false);
         if (rewardScreenPanel) rewardScreenPanel.SetActive(false);
 
         GameManager.SelectedLevelName = levelName;
-        maxWaves = (levelName == "Easy")   ? 1  :
-                   (levelName == "Medium") ? 15 :
-                                             int.MaxValue;   // Endless
+        var levelData = GameManager.Instance.LevelMap[levelName];
+        maxWaves = levelData.waves > 0 ? levelData.waves : int.MaxValue;
 
-        waveIndex      = 0;
-        levelFinished  = false;
+        waveIndex = 0;
+        levelFinished = false;
 
         if (HUDInfo) HUDInfo.gameObject.SetActive(true);
 
-        GameManager.Instance.player
-                 .GetComponent<PlayerController>().StartLevel();
-
+        GameManager.Instance.player.GetComponent<PlayerController>().StartLevel();
         StartCoroutine(SpawnWave());
     }
 
-    /* ====================================================================== */
-    /*                         WAVE COROUTINE                                 */
-    /* ====================================================================== */
     IEnumerator SpawnWave()
     {
         waveIndex++;
         enemiesSpawned = 0;
-        killCount      = 0;      // reset per wave
+        killCount = 0;
         UpdateHUD();
 
-        /* ---------- 3‑second countdown ---------- */
-        GameManager.Instance.state     = GameManager.GameState.COUNTDOWN;
+        GameManager.Instance.state = GameManager.GameState.COUNTDOWN;
         GameManager.Instance.countdown = 3;
         for (int i = 0; i < 3; i++)
         {
@@ -292,23 +278,41 @@ public class EnemySpawner : MonoBehaviour
 
         GameManager.Instance.state = GameManager.GameState.INWAVE;
 
-        /* ---------- spawn ten of the chosen type ---------- */
-        string type = (GameManager.SelectedLevelName == "Medium")  ? "skeleton" :
-                      (GameManager.SelectedLevelName == "Endless") ? "warlock"  :
-                                                                     "zombie";
-
-        for (int i = 0; i < 10; i++)
+        var level = GameManager.Instance.LevelMap[GameManager.SelectedLevelName];
+        foreach (var spawn in level.spawns)
         {
-            yield return SpawnEnemy(type);
-            enemiesSpawned++;
-            UpdateHUD();
+            var baseStats = GameManager.Instance.GetEnemyInfo(spawn.enemy);
+            var vars = new Dictionary<string, int> {
+                { "wave", waveIndex },
+                { "base", baseStats.hp }
+            };
+
+            int count = RPNEvaluator.Evaluate(spawn.count ?? "1", vars);
+            int[] sequence = spawn.sequence != null && spawn.sequence.Length > 0 ? spawn.sequence : new int[] { 1 };
+            float delay = spawn.delay > 0 ? spawn.delay : 2f;
+            int spawned = 0, seqIndex = 0;
+
+            while (spawned < count)
+            {
+                int toSpawn = Mathf.Min(sequence[seqIndex], count - spawned);
+                for (int i = 0; i < toSpawn; i++)
+                {
+                    yield return SpawnEnemy(spawn, waveIndex);
+                    enemiesSpawned++;
+                    UpdateHUD();
+                }
+                spawned += toSpawn;
+                seqIndex = (seqIndex + 1) % sequence.Length;
+                yield return new WaitForSeconds(delay);
+                
+            }
         }
 
-        /* ---------- wait for player to kill everything ---------- */
         yield return new WaitWhile(() => GameManager.Instance.enemy_count > 0);
+        
 
         levelFinished = (waveIndex >= maxWaves);
-        UpdateHUD();                      // final kill tally
+        UpdateHUD();
 
         if (levelFinished && waveButtonLabel)
             waveButtonLabel.text = "Next Level";
@@ -317,15 +321,21 @@ public class EnemySpawner : MonoBehaviour
         if (rewardScreenPanel) rewardScreenPanel.SetActive(true);
     }
 
-    /* ====================================================================== */
-    /*                         SPAWN ONE ENEMY                                */
-    /* ====================================================================== */
-    IEnumerator SpawnEnemy(string type)
+    IEnumerator SpawnEnemy(SpawnInfo spawn, int wave)
     {
-        var info = GameManager.Instance.GetEnemyInfo(type);
-        if (info == null) yield break;
+        var info = GameManager.Instance.GetEnemyInfo(spawn.enemy);
+        var vars = new Dictionary<string, int> {
+            { "base", info.hp },
+            { "wave", wave },
+            { "base_speed", (int)info.speed },
+            { "base_damage", info.damage }
+        };
 
-        var sp  = SpawnPoints[Random.Range(0, SpawnPoints.Length)];
+        int hp     = RPNEvaluator.Evaluate(spawn.hp     ?? "base", vars);
+        int speed  = RPNEvaluator.Evaluate(spawn.speed  ?? "base_speed", vars);
+        int damage = RPNEvaluator.Evaluate(spawn.damage ?? "base_damage", vars);
+        Debug.Log($"Spawning {spawn.enemy} | Wave: {wave} | HP: {hp}, Speed: {speed}, Damage: {damage}");
+        var sp = SpawnPoints[Random.Range(0, SpawnPoints.Length)];
         var pos = sp.transform.position + (Vector3)Random.insideUnitCircle * 1.8f;
 
         var e = Instantiate(enemyPrefab, pos, Quaternion.identity);
@@ -333,14 +343,12 @@ public class EnemySpawner : MonoBehaviour
             GameManager.Instance.enemySpriteManager.Get(info.sprite);
 
         var ec = e.GetComponent<EnemyController>();
-        ec.hp        = new Hittable(info.hp, Hittable.Team.MONSTERS, e);
-        ec.maxHP     = ec.currentHP = info.hp;
-        ec.speed     = info.speed;
-        ec.damage    = info.damage;
+        ec.hp = new Hittable(hp, Hittable.Team.MONSTERS, e);
+        ec.maxHP = ec.currentHP = hp;
+        ec.speed = speed;
+        ec.damage = damage;
 
-        /* ---------- count kills immediately on death ---------- */
-        ec.hp.OnDeath += () =>
-        {
+        ec.hp.OnDeath += () => {
             killCount++;
             UpdateHUD();
         };
@@ -349,24 +357,18 @@ public class EnemySpawner : MonoBehaviour
         yield return new WaitForSeconds(0.5f);
     }
 
-    /* ====================================================================== */
-    /*                           HUD UPDATE                                   */
-    /* ====================================================================== */
     void UpdateHUD()
     {
         if (!HUDInfo) return;
 
         string lvl = GameManager.SelectedLevelName;
         string waveLine = (maxWaves == int.MaxValue)
-                            ? $"Wave {waveIndex}"
-                            : $"Wave {waveIndex} / {maxWaves}";
+            ? $"Wave {waveIndex}"
+            : $"Wave {waveIndex} / {maxWaves}";
 
         HUDInfo.text = $"Level: {lvl}\n{waveLine}\nKills: {killCount}";
     }
 
-    /* ====================================================================== */
-    /*                        REWARD‑SCREEN BUTTON                            */
-    /* ====================================================================== */
     public void NextWave()
     {
         if (rewardScreenPanel) rewardScreenPanel.SetActive(false);
@@ -375,13 +377,11 @@ public class EnemySpawner : MonoBehaviour
         {
             if (GameManager.SelectedLevelName == "Endless")
             {
-                level_selector.gameObject.SetActive(true); // back to main menu
+                level_selector.gameObject.SetActive(true);
                 return;
             }
 
-            string next = (GameManager.SelectedLevelName == "Easy")
-                            ? "Medium"
-                            : "Endless";
+            string next = (GameManager.SelectedLevelName == "Easy") ? "Medium" : "Endless";
             StartLevel(next);
         }
         else
